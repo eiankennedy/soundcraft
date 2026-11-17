@@ -2,10 +2,41 @@
 
 use egui::{Color32, FontFamily, FontId};
 use soundcraft_model::EditMode;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// Whether the Light palette is active. Dark is the default (the incumbent is dark-only).
 static LIGHT_THEME: AtomicBool = AtomicBool::new(false);
+
+/// Workbench's look (dark, flat, its mode's accent) when SoundCraft runs inside Workbench's panel:
+/// 0 = off, else `0x01RRGGBB`. Set by the `view.workbench` command.
+static WORKBENCH: AtomicU32 = AtomicU32::new(0);
+
+/// The accent `view.workbench` uses until Workbench sends its mode's colour.
+pub const WORKBENCH_ACCENT: Color32 = Color32::from_rgb(0xFF, 0x60, 0x00);
+
+/// Turn Workbench's look on with an accent colour, or off with `None`.
+pub fn set_workbench(accent: Option<Color32>) {
+    let v = accent.map_or(0, |c| 0x0100_0000 | (u32::from(c.r()) << 16) | (u32::from(c.g()) << 8) | u32::from(c.b()));
+    WORKBENCH.store(v, Ordering::Relaxed);
+}
+
+/// The accent Workbench set, when its look is on.
+pub fn workbench_accent() -> Option<Color32> {
+    let v = WORKBENCH.load(Ordering::Relaxed);
+    let [_, r, g, b] = v.to_be_bytes();
+    (v != 0).then(|| Color32::from_rgb(r, g, b))
+}
+
+/// `#rrggbb` to a colour.
+pub fn parse_hex(s: &str) -> Option<Color32> {
+    let h = s.strip_prefix('#')?;
+    if h.len() != 6 {
+        return None;
+    }
+    let n = u32::from_str_radix(h, 16).ok()?;
+    let [_, r, g, b] = n.to_be_bytes();
+    Some(Color32::from_rgb(r, g, b))
+}
 
 /// Unit tests that change or read the process-wide palette must own it until their assertions
 /// finish. The lock is re-entrant per thread, so a test may hold it and still build apps
@@ -407,7 +438,71 @@ impl Tokens {
     };
 
     pub fn current() -> Tokens {
+        if let Some(accent) = workbench_accent() {
+            return Self::workbench(accent);
+        }
         if is_light() { Self::LIGHT } else { Self::DARK }
+    }
+
+    /// Workbench's palette over the dark one: near-black surfaces, hairline borders, warm white
+    /// text, its mode's accent. Meters, track colours and the edit-mode keys keep their colours.
+    pub fn workbench(accent: Color32) -> Tokens {
+        let surface = Color32::from_rgb(0x12, 0x13, 0x16);
+        let raised = Color32::from_rgb(0x18, 0x19, 0x1C);
+        let sunk = Color32::from_rgb(0x06, 0x06, 0x07);
+        let hairline = Color32::from_rgb(0x33, 0x34, 0x36);
+        let text = Color32::from_rgb(0xF2, 0xF1, 0xEE);
+        let dim = Color32::from_rgb(0x98, 0x99, 0x98);
+        let faint = Color32::from_rgb(0x83, 0x84, 0x85);
+        Tokens {
+            window_bg: surface,
+            panel_bg: surface,
+            panel_bg2: raised,
+            toolbar_bg: surface,
+            toolbar_group: sunk,
+            border: hairline,
+            border_light: hairline,
+            edge_light: Color32::TRANSPARENT,
+            text,
+            text_dim: dim,
+            header_text: text,
+            counter_bg: sunk,
+            counter_text: accent,
+            counter_label: dim,
+            accent,
+            accent_dark: accent.gamma_multiply(0.6),
+            button: Color32::from_rgb(0x26, 0x27, 0x2A),
+            button_hi: hairline,
+            button_border: hairline,
+            ruler_bg: surface,
+            ruler_label_bg: surface,
+            ruler_text: dim,
+            ruler_tick: faint,
+            marker_ruler: surface,
+            playlist_bg: sunk,
+            playlist_alt: Color32::from_rgb(0x0C, 0x0C, 0x0E),
+            grid_line: Color32::from_rgb(0x1C, 0x1D, 0x20),
+            bar_line: Color32::from_rgb(0x26, 0x27, 0x2A),
+            insertion: text,
+            menu_bar: surface,
+            group_border: hairline,
+            mode_off: raised,
+            counter_off: raised,
+            counter_border: hairline,
+            counter_rule: hairline,
+            row_selected: Color32::from_rgb(0x26, 0x27, 0x2A),
+            big_counter_bg: sunk,
+            header_selected: Color32::from_rgb(0x26, 0x27, 0x2A),
+            strip_bg: surface,
+            strip_section: raised,
+            strip_selected: Color32::from_rgb(0x26, 0x27, 0x2A),
+            universe_bg: sunk,
+            universe_view: accent,
+            section_label: faint,
+            slot_bg: sunk,
+            slot_well: sunk,
+            ..Self::DARK
+        }
     }
 
     /// Fill of the edit-mode key while `mode` is the active one.
@@ -488,6 +583,9 @@ pub fn mono(size: f32) -> FontId {
 
 /// Make `light` (or dark) the active palette and apply its visuals. Call only when it changes.
 pub fn apply(ctx: &egui::Context, light: bool) {
+    // Workbench's look is always dark.
+    let flat = workbench_accent().is_some();
+    let light = light && !flat;
     LIGHT_THEME.store(light, Ordering::Relaxed);
     let t = Tokens::current();
     let mut v = if light { egui::Visuals::light() } else { egui::Visuals::dark() };
@@ -501,8 +599,15 @@ pub fn apply(ctx: &egui::Context, light: bool) {
     v.widgets.hovered.weak_bg_fill = t.button_hi;
     v.widgets.noninteractive.fg_stroke.color = t.text;
     v.widgets.inactive.fg_stroke.color = t.text;
-    v.window_corner_radius = egui::CornerRadius::same(6);
-    v.menu_corner_radius = egui::CornerRadius::same(4);
+    // Workbench is square-cornered.
+    v.window_corner_radius = egui::CornerRadius::same(if flat { 0 } else { 6 });
+    v.menu_corner_radius = egui::CornerRadius::same(if flat { 0 } else { 4 });
+    if flat {
+        v.window_stroke = egui::Stroke::new(1.0, t.border);
+        for w in [&mut v.widgets.noninteractive, &mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
+            w.corner_radius = egui::CornerRadius::ZERO;
+        }
+    }
     // Keep receiving native OS appearance changes even when our palette is manual. On macOS,
     // pinning egui's theme also pins the window appearance and hides later OS changes.
     ctx.set_theme(egui::ThemePreference::System);

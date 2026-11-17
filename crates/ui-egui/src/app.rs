@@ -152,7 +152,8 @@ impl SoundApp {
                 ctx.request_repaint();
             }
         }
-        let light = theme::wants_light(ctx, self.ui.theme);
+        // Workbench's look is always dark.
+        let light = theme::wants_light(ctx, self.ui.theme) && theme::workbench_accent().is_none();
         if self.theme_applied != Some(light) || theme::is_light() != light {
             theme::apply(ctx, light);
             self.theme_applied = Some(light);
@@ -326,7 +327,7 @@ impl SoundApp {
         let received_synthetic = self.pass_received_synthetic(&ctx);
         shortcuts::handle(self, &ctx);
         self.sample_drop_targets.clear();
-        if !self.native_menu_bar {
+        if !self.native_menu_bar && !self.ui.hands_off {
             menus::menu_bar(self, ui);
         }
         // With the Mix window in its own native window, the main window keeps Edit.
@@ -337,7 +338,9 @@ impl SoundApp {
         if self.ui.mix_separate {
             mix_window::show_separate(self, &ctx);
         }
-        panels::floating(self, &ctx);
+        if !self.ui.hands_off {
+            panels::floating(self, &ctx);
+        }
         windows::show(self, &ctx);
         preferences::show(self, &ctx);
         video_window::show(self, &ctx);

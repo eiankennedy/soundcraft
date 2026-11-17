@@ -577,6 +577,12 @@ dependencies = [
 
 [[package]]
 name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
+name = "base64"
 version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
@@ -1175,6 +1181,20 @@ source = "git+https://github.com/storytold/craft-libs?rev=ea24422ae9859dc5da398d
 name = "craft-docpath"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=ea24422ae9859dc5da398d0462bc87f8e02e0d10#ea24422ae9859dc5da398d0462bc87f8e02e0d10"
+
+[[package]]
+name = "craft-embed"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "egui",
+ "egui-wgpu",
+ "log",
+ "png",
+ "pollster 0.4.0",
+ "raw-window-handle",
+ "wgpu",
+]
 
 [[package]]
 name = "craft-fonts-build"
@@ -3792,7 +3812,7 @@ version = "1.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "327a4cb2ad49dc48adfdc9da89e22c64d488b508c67a044d71ba729e4521a285"
 dependencies = [
- "base64",
+ "base64 0.23.1",
  "indexmap",
  "quick-xml 0.42.0",
  "serde",
@@ -4860,6 +4880,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "soundcraft-embed"
+version = "0.20.1"
+dependencies = [
+ "craft-embed",
+ "egui",
+ "serde_json",
+ "soundcraft-engine",
+ "soundcraft-ui-egui",
+]
+
+[[package]]
 name = "soundcraft-engine"
 version = "0.20.1"
 dependencies = [
@@ -5655,7 +5686,7 @@ version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cde93ff05758a36a851a398a772b0b79a82fbe3c186a46f2696baaeaf84c966b"
 dependencies = [
- "base64",
+ "base64 0.23.1",
  "flate2",
  "log",
  "percent-encoding",
@@ -5672,7 +5703,7 @@ version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841583fc36089d7d59419568ae157f43a5a03a2e5a81ba87c77d1596ef46e922"
 dependencies = [
- "base64",
+ "base64 0.23.1",
  "http",
  "httparse",
  "log",

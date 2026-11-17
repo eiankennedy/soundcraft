@@ -81,6 +81,8 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("ui.theme", "Appearance", "", None),
     ("ui.reduce_visual_effects", "Reduce Visual Effects", "", None),
     ("ui.undo_levels", "Levels of Undo", "", None),
+    ("view.workbench", "Workbench Look", "", None),
+    ("view.handsOff", "Hands Off", "", None),
 ];
 
 /// Extra catalog mappings handled by the UI layer.
@@ -819,6 +821,18 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             app.ui.reduce_visual_effects = mode;
             json!({"mode": mode.id()})
         }
+        "view.workbench" => {
+            let on = p.get("on").and_then(Value::as_bool).unwrap_or(true);
+            let accent = p.get("accent").and_then(Value::as_str).and_then(crate::theme::parse_hex).or_else(crate::theme::workbench_accent);
+            crate::theme::set_workbench(on.then(|| accent.unwrap_or(crate::theme::WORKBENCH_ACCENT)));
+            // Re-apply the visuals on the next frame.
+            app.theme_applied = None;
+            json!({"on": on})
+        }
+        "view.handsOff" => {
+            app.ui.hands_off = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.hands_off);
+            json!({"on": app.ui.hands_off})
+        }
         "ui.undo_levels" => {
             if let Some(levels) = p.get("levels").and_then(Value::as_u64) {
                 app.ui.undo_levels = usize::try_from(levels).unwrap_or(64).clamp(1, 64);
@@ -840,7 +854,9 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
                         }
                         let closed_preferences = app.ui.show_preferences && !ns.show_preferences;
                         crate::docking::cancel_replaced_state(app, &ns);
+                        let hands_off = app.ui.hands_off;
                         app.ui = ns;
+                        app.ui.hands_off = hands_off;
                         app.ui.undo_levels = app.ui.undo_levels.clamp(1, 64);
                         app.engine.set_history_limit(app.ui.undo_levels);
                         if closed_preferences {

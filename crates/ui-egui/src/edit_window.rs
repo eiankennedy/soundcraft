@@ -62,6 +62,11 @@ use universe::universe;
 pub fn show(app: &mut SoundApp, ui: &mut Ui) {
     let t = Tokens::current();
     drive_drag(app, ui.ctx());
+    if app.ui.hands_off {
+        // Hands off: only the rulers, track headers and lanes.
+        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.playlist_bg)).show(ui, |ui| main_area(app, ui));
+        return;
+    }
     egui::Panel::top("edit_toolbar").exact_size(toolbar::HEIGHT).frame(egui::Frame::NONE.fill(t.toolbar_bg)).show(ui, |ui| toolbar::show(app, ui));
     egui::Panel::bottom("edit_status").exact_size(22.0).frame(egui::Frame::NONE.fill(t.toolbar_bg)).show(ui, |ui| status_bar(app, ui));
     egui::Panel::bottom("lower_dock_tabs").exact_size(22.0).frame(egui::Frame::NONE.fill(t.panel_bg2)).show(ui, |ui| dock_tabs(app, ui));

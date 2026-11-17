@@ -153,6 +153,11 @@ pub struct UiState {
     pub window_size: [f32; 2],
     pub window_maximized: bool,
     pub ui_scale: f32,
+    /// Hands off (`view.handsOff`): only the tracks are drawn (no menu bar, toolbar, side panes,
+    /// dock tabs or status bar), for when an agent does the work and the person watches. Never
+    /// saved with the preferences, so the desktop app always starts with its menus.
+    #[serde(skip)]
+    pub hands_off: bool,
 }
 
 impl Default for UiState {
@@ -220,6 +225,7 @@ impl Default for UiState {
             window_size: [1600.0, 1000.0],
             window_maximized: false,
             ui_scale: 1.0,
+            hands_off: false,
         }
     }
 }
