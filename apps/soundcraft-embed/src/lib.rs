@@ -12,7 +12,7 @@
 //! Scripted input (`ui.click`, `ui.key`...) replies once a frame has applied it, so those requests answer
 //! `pending` and the reply comes from [`EmbedApp::settle`].
 //!
-//! No audio device is opened: the transport runs without sound.
+//! Playback goes to the default output device (`CRAFT_NO_AUDIO=1`: none, the transport runs silent).
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
@@ -45,8 +45,8 @@ impl EmbedApp for Sound {
         let method = req.get("method").and_then(Value::as_str).unwrap_or("");
         let params = req.get("params").cloned().unwrap_or_else(|| json!({}));
         let (method, mut params) = translate(method, params);
-        let command = params.get("command").and_then(Value::as_str).unwrap_or("");
-        if matches!(command, "file.import_audio" | "file.import_midi")
+        let command = params.get("command").and_then(Value::as_str).unwrap_or("").to_owned();
+        if matches!(command.as_str(), "file.import_audio" | "file.import_midi")
             && let Some(inner) = params.get_mut("params").and_then(Value::as_object_mut)
             && !inner.contains_key("at")
         {
@@ -57,6 +57,12 @@ impl EmbedApp for Sound {
             "ui.screenshot" => return err("Workbench takes the screenshot of the panel itself"),
             "file.open" => return self.open(&params),
             _ => {}
+        }
+        if command == "session.save_as"
+            && let Some(path) = params.pointer("/params/path").and_then(Value::as_str)
+            && is_bundle(path)
+        {
+            return self.save_bundle(path);
         }
         let (req, rx) = ControlRequest::new(method, params);
         if self.tx.send(req).is_err() {
@@ -99,6 +105,23 @@ impl Sound {
         if !p.exists() {
             return err(format!("no file at {path}"));
         }
+        if is_bundle(path) {
+            // a one-file session (Workbench's .soundcraft, the web build's .scraftz): Workbench saved what was open
+            let bytes = match std::fs::read(p) {
+                Ok(b) => b,
+                Err(e) => return err(format!("couldn't read {path}: {e}")),
+            };
+            let name = p.file_name().and_then(std::ffi::OsStr::to_str).unwrap_or("Session.scraftz").to_owned();
+            self.app.engine.mark_clean();
+            let before = self.app.engine.path.take(); // set again by a successful open
+            dialogs::open_session_bytes(&mut self.app, name, bytes);
+            if self.app.engine.path.is_none() {
+                self.app.engine.path = before;
+                return err(format!("couldn't open {path}: {}", self.app.ui.status));
+            }
+            self.app.engine.path = Some(path.to_owned());
+            return json!({"ok": true, "result": {"opened": path, "status": self.app.ui.status}}).to_string();
+        }
         let session = p.extension().and_then(std::ffi::OsStr::to_str).is_some_and(|e| e.eq_ignore_ascii_case("scraft")) || p.is_dir();
         if session {
             return match self.app.run("session.open", json!({"path": path})) {
@@ -109,6 +132,29 @@ impl Sound {
         dialogs::open_path(&mut self.app, p);
         json!({"ok": true, "result": {"imported": path, "status": self.app.ui.status}}).to_string()
     }
+}
+
+impl Sound {
+    /// `file.saveAs` to a one-file session: the session and its audio in one bundle at `path`.
+    fn save_bundle(&mut self, path: &str) -> String {
+        let (bytes, fresh) = match soundcraft_engine::io::session_bundle(self.app.engine.session()) {
+            Ok(b) => b,
+            Err(e) => return err(e),
+        };
+        if let Err(e) = std::fs::write(path, &bytes) {
+            return err(format!("couldn't write {path}: {e}"));
+        }
+        *self.app.engine.session_mut() = fresh;
+        self.app.engine.path = Some(path.to_owned());
+        self.app.engine.mark_clean();
+        json!({"ok": true, "result": {"saved": path, "bytes": bytes.len()}}).to_string()
+    }
+}
+
+/// A one-file session: Workbench's `.soundcraft` or the web build's `.scraftz` bundle.
+fn is_bundle(path: &str) -> bool {
+    let low = path.to_ascii_lowercase();
+    low.ends_with(".soundcraft") || low.ends_with(".scraftz")
 }
 
 fn err(e: impl std::fmt::Display) -> String {
@@ -152,7 +198,11 @@ fn translate(method: &str, params: Value) -> (String, Value) {
 
 fn make(_ctx: &egui::Context) -> Box<dyn EmbedApp> {
     let (tx, rx) = channel();
-    let mut app = SoundApp::new(Engine::default(), None, Services::default()).with_control(rx);
+    let engine = Engine::default();
+    // sound through the default output (a silent clock without one); CRAFT_NO_AUDIO=1 keeps test runs silent
+    let player =
+        (std::env::var_os("CRAFT_NO_AUDIO").is_none()).then(|| soundcraft_playback::Player::new(std::sync::Arc::new(engine.session().clone())));
+    let mut app = SoundApp::new(engine, player, Services::default()).with_control(rx);
     // Workbench's look and Hands off from the first frame; Workbench sets the mode's accent right after
     let _ = app.run("view.workbench", json!({"on": true}));
     let _ = app.run("view.handsOff", json!({"on": true}));
