@@ -36,11 +36,7 @@ fn frame_limit(name: &str, ratio: f64, semitones: f32, sr: f64, to: u32, selecti
 /// Process each target clip's audio and replace the clip with one backed by a new source.
 fn process(e: &mut Engine, p: &Value) -> Result<Value> {
     let name = str_param(p, "process").or_else(|| str_param(p, "plugin")).ok_or_else(|| bad("audiosuite.process", "`process` required"))?.to_string();
-    let params: Vec<(String, f32)> = p
-        .get("params")
-        .and_then(Value::as_object)
-        .map(|o| o.iter().filter_map(|(k, v)| v.as_f64().filter(|x| x.is_finite()).map(|x| (k.clone(), x as f32))).collect())
-        .unwrap_or_default();
+    let params = params_param(&name, p)?;
     let get = |k: &str, d: f32| params.iter().find(|(n, _)| n == k).map_or(d, |(_, v)| *v);
     let known = soundcraft_dsp::plugin_info(&name).is_some()
         || matches!(
@@ -196,6 +192,106 @@ fn generate(e: &mut Engine, p: &Value, name: &str, params: &[(String, f32)], r: 
     Ok(json!({"processed": clips.len(), "process": name, "clips": clips}))
 }
 
+/// One param a process takes: id, range and, for a choice, its labels (the value is the index).
+struct ParamSpec {
+    id: &'static str,
+    min: f32,
+    max: f32,
+    choices: &'static [&'static str],
+}
+
+impl ParamSpec {
+    const fn any(id: &'static str) -> Self {
+        Self { id, min: f32::NEG_INFINITY, max: f32::INFINITY, choices: &[] }
+    }
+    const fn range(id: &'static str, min: f32, max: f32) -> Self {
+        Self { id, min, max, choices: &[] }
+    }
+
+    /// How the help and errors name it: `freq (20 to 20000)`, `waveform (Sine | Square | ...)`.
+    fn describe(&self) -> String {
+        if !self.choices.is_empty() {
+            format!("{} ({})", self.id, self.choices.iter().enumerate().map(|(i, c)| format!("{i} {c}")).collect::<Vec<_>>().join(" | "))
+        } else if self.min.is_finite() && self.max.is_finite() {
+            format!("{} ({} to {})", self.id, self.min, self.max)
+        } else {
+            self.id.to_string()
+        }
+    }
+
+    /// A JSON value as this param's number: a number in range, true / false, or a choice's label.
+    fn value(&self, process: &str, v: &Value) -> Result<f32> {
+        let n = match v {
+            Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+            Value::Number(n) => n.as_f64().filter(|x| x.is_finite()).map(|x| x as f32),
+            Value::String(s) => {
+                let key = |t: &str| t.chars().filter(char::is_ascii_alphanumeric).collect::<String>().to_ascii_lowercase();
+                self.choices.iter().position(|c| key(c) == key(s)).map(|i| i as f32)
+            }
+            _ => None,
+        };
+        let Some(n) = n else {
+            let want = if self.choices.is_empty() { "a number".to_string() } else { format!("one of {}", self.choices.join(", ")) };
+            return Err(bad("audiosuite.process", format!("`{process}` param `{}` must be {want}, not {v}", self.id)));
+        };
+        let whole = self.choices.is_empty() || n.fract() == 0.0;
+        if n < self.min || n > self.max || !whole {
+            return Err(bad("audiosuite.process", format!("`{process}` param {} is out of range: {v}", self.describe())));
+        }
+        Ok(n)
+    }
+}
+
+/// The params process `name` takes.
+fn param_specs(name: &str) -> Vec<ParamSpec> {
+    let mut specs: Vec<ParamSpec> = soundcraft_dsp::plugin_info(name)
+        .map(|info| info.params.iter().map(|p| ParamSpec { id: p.id, min: p.min, max: p.max, choices: p.choices }).collect())
+        .unwrap_or_default();
+    match name {
+        "normalize" => specs.push(ParamSpec::any("target_db")),
+        "gain" => specs.push(ParamSpec::any("db")),
+        "time_stretch" => specs.push(ParamSpec::range("ratio", 0.25, 4.0)),
+        "pitch_shift" => specs.push(ParamSpec::range("semitones", -24.0, 24.0)),
+        "varispeed" => specs.push(ParamSpec::range("speed", 0.25, 4.0)),
+        "speed_ramp" => specs.extend([
+            ParamSpec { id: "change", min: 0.0, max: 1.0, choices: &["Slow Down", "Speed Up"] },
+            ParamSpec { id: "selection", min: 0.0, max: 1.0, choices: &["Fit To", "Extend"] },
+            ParamSpec { id: "fades", min: 0.0, max: 1.0, choices: &["Off", "On"] },
+        ]),
+        _ => {}
+    }
+    specs
+}
+
+/// `params` checked against what process `name` takes: an unknown name or a bad value is an error that
+/// lists the right ones, rather than a setting quietly left at its default.
+fn params_param(name: &str, p: &Value) -> Result<Vec<(String, f32)>> {
+    let specs = param_specs(name);
+    let takes = || {
+        if specs.is_empty() {
+            format!("`{name}` takes no params")
+        } else {
+            format!("`{name}` params: {}", specs.iter().map(ParamSpec::describe).collect::<Vec<_>>().join(", "))
+        }
+    };
+    // a param given beside `process` rather than inside `params` would be ignored
+    if let Some(s) = specs.iter().find(|s| p.get(s.id).is_some()) {
+        return Err(bad("audiosuite.process", format!("put `{}` inside `params`; {}", s.id, takes())));
+    }
+    let Some(given) = p.get("params").filter(|v| !v.is_null()) else { return Ok(Vec::new()) };
+    let Some(given) = given.as_object() else {
+        return Err(bad("audiosuite.process", format!("`params` must be an object; {}", takes())));
+    };
+    let mut out = Vec::new();
+    for (k, v) in given {
+        let Some(spec) = specs.iter().find(|s| s.id == k) else {
+            return Err(bad("audiosuite.process", format!("unknown param `{k}`; {}", takes())));
+        };
+        out.push((k.clone(), spec.value(name, v)?));
+    }
+    Ok(out)
+}
+
 /// Run plugin `id` with `params` over `audio`, in place.
 fn apply(id: &str, params: &[(String, f32)], audio: &mut [Vec<f32>], srf: f32) -> Result<()> {
     let Some(mut pl) = soundcraft_dsp::create(id) else { return Err(bad("audiosuite.process", format!("cannot create `{id}`"))) };
@@ -347,6 +443,45 @@ mod tests {
         e.execute("audiosuite.process", &generator).unwrap();
         let ranges: Vec<_> = e.session().tracks[0].clips().iter().map(|c| (c.start, c.length)).collect();
         assert_eq!(ranges, vec![(0, 32), (32, 64)]);
+    }
+
+    /// Workbench: `{frequency: 440, amplitude: 0.5, wave: "sine"}` was taken without a word and the
+    /// generator ran at its defaults. Wrong names and values are refused, naming the right ones.
+    #[test]
+    fn wrong_params_are_refused_naming_the_right_ones() {
+        let mut e = Engine::new(Session::default());
+        let t = e.session_mut().add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Tone"));
+        e.execute("edit.select", &json!({"tracks": [t.0], "start": 0, "end": 4800})).unwrap();
+        let mut err = |p: Value| e.execute("audiosuite.process", &p).unwrap_err().to_string();
+        let msg = err(json!({"process": "signal_generator", "params": {"frequency": 440}}));
+        assert!(msg.contains("`frequency`") && msg.contains("waveform") && msg.contains("freq (20 to 20000)") && msg.contains("level"), "{msg}");
+        let msg = err(json!({"process": "signal_generator", "params": {"waveform": "kazoo"}}));
+        assert!(msg.contains("Sine") && msg.contains("Pink Noise"), "{msg}");
+        let msg = err(json!({"process": "signal_generator", "params": {"freq": 50_000}}));
+        assert!(msg.contains("out of range"), "{msg}");
+        let msg = err(json!({"process": "signal_generator", "params": {"freq": "loud"}}));
+        assert!(msg.contains("a number"), "{msg}");
+        let msg = err(json!({"process": "signal_generator", "freq": 440}));
+        assert!(msg.contains("inside `params`"), "{msg}");
+        let msg = err(json!({"process": "signal_generator", "params": [440]}));
+        assert!(msg.contains("must be an object"), "{msg}");
+        let msg = err(json!({"process": "reverse", "params": {"amount": 1}}));
+        assert!(msg.contains("takes no params"), "{msg}");
+        let msg = err(json!({"process": "time_stretch", "params": {"ratio": 9}}));
+        assert!(msg.contains("ratio (0.25 to 4)"), "{msg}");
+        assert!(e.session().tracks[0].clips().is_empty(), "nothing was generated");
+
+        // A choice by its label (any case or spacing), and a toggle as true / false.
+        let out = e
+            .execute("audiosuite.process", &json!({"process": "signal_generator", "params": {"waveform": "square", "freq": 440, "level": -6}}))
+            .unwrap();
+        assert_eq!(out["processed"], 1);
+        let c = e.session().tracks[0].clips()[0].clone();
+        let buf = &e.session().pool.get(c.source().unwrap()).unwrap().buffer;
+        let loud = buf.channels[0].iter().filter(|x| x.abs() > 0.45).count();
+        assert!(loud > buf.channels[0].len() / 2, "a square wave sits at its peak: {loud} of {}", buf.channels[0].len());
+        assert_eq!(params_param("signal_generator", &json!({"params": {"waveform": "white_noise"}})).unwrap(), vec![("waveform".to_string(), 4.0)]);
+        assert_eq!(params_param("speed_ramp", &json!({"params": {"fades": false, "change": "Speed Up"}})).unwrap().len(), 2);
     }
 
     #[test]
